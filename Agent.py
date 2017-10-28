@@ -7,6 +7,7 @@ import numpy as np
 from keras.layers import Input, Dense
 from keras.models import Model
 import tensorflow as tf
+import math
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -39,6 +40,8 @@ class Agent:
 
         self.training_data = [[], [], [], []]
         self.batch_size = batch_size
+        self.best_prime = 1
+        self.best_score = 0
 
         # Bunch of placeholders values
         self.dummy_value = np.zeros((1, 1))
@@ -91,7 +94,11 @@ class Agent:
             while done == False:
 
                 fake_batch, actions, predicted_values, old_predictions = self.get_fake_batch()
-                values = get_values(fake_batch, self.max_size_prime, self.batch_size, self.gammas)
+                values, best_prime, best_score = get_values(fake_batch, self.max_size_prime, self.batch_size, self.gammas)
+                if best_score > self.best_score:
+                    self.best_score = best_score
+                    self.best_prime = best_prime
+
                 fake_batch = fake_batch[:self.batch_size]
                 value_list.append(np.mean(values))
 
@@ -104,12 +111,14 @@ class Agent:
 
 
 
-                if batch_num % 100 == 0:
+                if batch_num % 10 == 0:
                     print()
                     self.actor_critic.save_weights('actor_critic_' + str(self.max_size_prime))
                     print('Batch number :', batch_num, '\tEpoch :', e, '\tAverage values :', np.mean(value_list))
                     print('Policy losses :', '%.5f' % np.mean(policy_losses),
-                          '\tCritic losses :', '%.5f' % np.mean(critic_losses))
+                          '\tCritic losses :', '%.5f' % np.mean(critic_losses),
+                          '\tBest Prime :', self.best_prime,
+                          '\tBest Score :', self.best_score)
                     self.print_pred()
                     value_list, policy_losses, critic_losses = [], [], []
 
@@ -139,7 +148,7 @@ class Agent:
 
         for i in range(self.max_size_prime):
             predictions = self.actor_critic.predict([seed, self.dummy_value, self.dummy_value, self.dummy_predictions])
-            choice = np.random.choice(self.max_size_prime, 1, p=predictions[0][0])
+            choice = np.argmax(predictions[0])
             seed[:, choice] = 1 - seed[:, choice]
 
         return seed
@@ -148,24 +157,30 @@ class Agent:
     @nb.jit
     def print_pred(self):
         fake_state = self.make_seed()
-
         pred = ""
         for i in range(self.max_size_prime):
-            pred += str(fake_state[i, 0][0])[0]
+            pred += str(fake_state[0, i, 0])
         print(pred, int(pred, 2), divisors(int(pred, 2)))
 
 
-
-@nb.jit(nb.float32[:,:](nb.float32[:,:,:], nb.int64, nb.int64, nb.float32[:]))
+@nb.jit(nb.types.Tuple((nb.float32[:,:], nb.int64, nb.float32))(nb.float32[:,:,:], nb.int64, nb.int64, nb.float32[:]))
 def get_values(fake_batch, max_size_prime, batch_size, gammas):
+    best_prime = 1
+    best_value = 0
+
     values = np.zeros(shape=(fake_batch.shape[0], 1))
     for i in range(fake_batch.shape[0]):
         number = ''
         for j in range(fake_batch.shape[1]):
             number += str(fake_batch[i,j][0])[0]
         number = int(number, 2)
-        values[i] = (number / divisors(number)) / 2**(max_size_prime - 1)
-    return numba_optimised_nstep_value_function(values, batch_size, max_size_prime, gammas)
+        n_divisors = divisors(number)
+
+        values[i] = (number / n_divisors) / 2**(max_size_prime - 1)
+        if values[i] > best_value and n_divisors == 2:
+            best_value = values[i]
+            best_prime = number
+    return numba_optimised_nstep_value_function(values, batch_size, max_size_prime, gammas), best_prime, best_value
 
 
 # Some strong numba optimisation in bottlenecks
